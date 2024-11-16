@@ -2,7 +2,7 @@
 
 .DEFAULT_GOAL := _bruh
 
-TARGET = tcp-client
+TARGET = ftp-client
 
 _bruh:
 	@echo "You didn't read the README, did you?"

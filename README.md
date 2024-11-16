@@ -1,3 +1,3 @@
-# TCP Client and Server.
+# FTP Client and Server.
 
-#### [RFC959 TCP standard](https://datatracker.ietf.org/doc/html/rfc959)
+#### [RFC959 FTP standard](https://datatracker.ietf.org/doc/html/rfc959)
