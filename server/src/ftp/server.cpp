@@ -99,6 +99,59 @@ void FTPServer::handleClient(int client_socket)
     free(buffer);
 }
 
+void FTPServer::handleCwd(const std::string& directory, int client_socket)
+{
+    std::cout << "[TRACE]: CWD " << directory << "\n";
+
+    if (!sessions[client_socket].logged_in)
+    {
+        sendResponse("530 Not logged in.\r\n", client_socket);
+        return;
+    }
+
+    std::string current_directory = sessions[client_socket].current_directory;
+    std::vector<std::string> directories;
+    std::istringstream iss(current_directory);
+    std::string token;
+
+    // Split the current directory into parts
+    while (std::getline(iss, token, '/'))
+        if (!token.empty())
+            directories.push_back(token);
+
+    // Split the input directory into parts
+    std::istringstream iss_dir(directory);
+    while (std::getline(iss_dir, token, '/'))
+        if (token == "..")
+            if (!directories.empty())
+                directories.pop_back();
+            else
+            {
+                sendResponse("550 Path reaches outside sandboxed directory.\r\n", client_socket);
+                return;
+            }
+        else if (!token.empty() && token != ".")
+            directories.push_back(token);
+
+    // Reconstruct the new directory path
+    std::string new_directory;
+    for (const auto& dir : directories)
+        if(dir != ".")
+            new_directory += "/" + dir;
+        else
+            new_directory += dir;
+
+    if (new_directory.empty())
+    {
+        sendResponse("550 Path reaches outside sandboxed directory.\r\n", client_socket);
+        return;
+    }
+
+    // Change to the new directory
+    sessions[client_socket].current_directory = new_directory;
+    sendResponse("250 Directory successfully changed.\r\n", client_socket);
+}
+
 void FTPServer::handlePort(const std::string& params, int client_socket)
 {
     std::cout << "[TRACE]: PORT " << params << "\n";
@@ -197,6 +250,12 @@ void FTPServer::handleCommand(const std::string& command, int client_socket)
         close(client_socket);
         sessions.erase(client_socket);
     }
+    else if (cmd == "CWD")
+    {
+        std::string directory;
+        iss >> directory;
+        handleCwd(directory, client_socket);
+    }
     else
         sendResponse("500 Unknown command.\r\n", client_socket);
 }
@@ -282,7 +341,7 @@ void FTPServer::handleList(int client_socket)
         return;
     }
 
-    std::cout << "[TRACE]: LIST\n";
+    std::cout << "[TRACE]: LIST " << sessions[client_socket].current_directory << " \n";
     sendResponse("150 File status okay; about to open data connection.\r\n", client_socket);
 
     int data_fd;
@@ -539,9 +598,7 @@ void FTPServer::handleRetrieve(const std::string& filename, int client_socket)
         sendResponse("226 Closing data connection. Requested file action successful.\r\n", client_socket);
     }
     else
-    {
         sendResponse("550 Requested action not taken. File unavailable.\r\n", client_socket);
-    }
 
     close(data_fd);
 }

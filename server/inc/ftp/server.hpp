@@ -57,5 +57,6 @@ private:
     void handleSystem(int client_socket);
     void handleType(const std::string& type, int client_socket);
     void sendResponse(const std::string& response, int client_socket);
+    void handleCwd(const std::string& directory, int client_socket);
     void handlePassive();
 };
