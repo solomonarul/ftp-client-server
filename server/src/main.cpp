@@ -1,14 +1,8 @@
-#include "ftp/instance.hpp"
-#include <cstdlib>
-#include <iostream>
+#include "ftp/server.hpp"
 
-using namespace FTP_Server;
-
-int main(int argc, char* argv[])
+int main()
 {
-    Instance server(InstanceConfig{});
-    server.start_listening();
-    std::cout << "[SRVR]: Started listening on port " << server.get_pi_port() << ".\n";
-    server.wait();
+    FTPServer server(FTPServerConfig{});
+    server.start();
     return EXIT_SUCCESS;
 }
