@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <time.h>
+#include <sys/stat.h>
 #include <iostream>
 
 FTPServer::FTPServer(FTPServerConfig config)
@@ -47,6 +49,15 @@ FTPServer::FTPServer(FTPServerConfig config)
         perror("Data socket failed");
         exit(EXIT_FAILURE);
     }
+    
+    // Set the SO_REUSEADDR socket option
+    opt = 1;
+    if (setsockopt(data_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+    {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+
 
     std::cout << "[INFO]: Server initialized on port " << config.port << "\n";
 }
@@ -250,6 +261,8 @@ void FTPServer::handleCommand(const std::string& command, int client_socket)
         close(client_socket);
         sessions.erase(client_socket);
     }
+    else if (cmd == "PWD")
+        handlePWD();
     else if (cmd == "CWD")
     {
         std::string directory;
@@ -286,10 +299,8 @@ void FTPServer::handlePassive()
     std::cout << "[TRACE]: PASV\n";
 
     // Ensure any existing active connection is closed
-    if (sessions[client_socket].active_mode)
-    {
+    if (sessions[client_socket].active_mode || data_socket != 0)
         close(data_socket);
-    }
 
     data_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (data_socket == 0)
@@ -308,8 +319,18 @@ void FTPServer::handlePassive()
         return;
     }
 
-    int port = config.data_port; // Use the configured data port
-    std::string response = "227 Entering Passive Mode (127,0,0,1," + std::to_string(port / 256) + "," + std::to_string(port % 256) + ")\r\n";
+    srand(time(NULL));
+    uint16_t port = rand();
+
+    // Get current IP address
+    sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    getsockname(client_socket, (struct sockaddr*)&addr, &addr_len);
+    std::string ip = inet_ntoa(addr.sin_addr);
+
+    // Format it in the format expected by the commadn.
+    ip = std::regex_replace(ip, std::regex("\\."), ",");
+    std::string response = "227 Entering Passive Mode (" + ip + "," + std::to_string(port / 256) + "," + std::to_string(port % 256) + ")\r\n";
     sendResponse(response, client_socket);
 
     sockaddr_in data_addr;
@@ -333,6 +354,18 @@ void FTPServer::handlePassive()
     sessions[client_socket].active_mode = false;
 }
 
+void FTPServer::handlePWD()
+{
+    std::cout << "[TRACE]: PWD\n";
+    // Replace starting . with /
+    std::string current_directory = sessions[client_socket].current_directory;
+    if (current_directory == ".")
+        current_directory = "/";
+    else
+        current_directory = current_directory.substr(1, current_directory.size() - 1);
+    sendResponse("257 \"" + current_directory + "\" is the current directory.\r\n", client_socket);
+}
+
 void FTPServer::handleList(int client_socket)
 {
     if (!sessions[client_socket].logged_in)
@@ -350,12 +383,24 @@ void FTPServer::handleList(int client_socket)
         sockaddr_in data_addr;
         socklen_t addrlen = sizeof(data_addr);
         data_fd = accept(data_socket, (struct sockaddr*)&data_addr, &addrlen);
+
+        // Set the SO_REUSEADDR socket option
+        int opt = 1;
+        if (setsockopt(data_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        {
+            perror("setsockopt");
+            exit(EXIT_FAILURE);
+        }
+
         if (data_fd < 0)
         {
             perror("accept");
             sendResponse("425 Can't open data connection.\r\n", client_socket);
             return;
         }
+
+        sessions[client_socket].passive_mode = false;
+        sessions[client_socket].active_mode = true;
     }
     else if (sessions[client_socket].active_mode)
     {
@@ -366,6 +411,7 @@ void FTPServer::handleList(int client_socket)
             sendResponse("425 Can't open data connection.\r\n", client_socket);
             return;
         }
+        
         if (connect(data_fd, (struct sockaddr*)&sessions[client_socket].active_data_addr, sizeof(sessions[client_socket].active_data_addr)) == -1)
         {
             perror("connect");
@@ -387,9 +433,50 @@ void FTPServer::handleList(int client_socket)
     {
         while ((ent = readdir(dir)) != NULL)
         {
-            response += ent->d_name;
-            response += "\r\n";
+            // Generate output in the format of ls -l
+            struct stat file_stat;
+            std::string filename = ent->d_name;
+            if (filename == "." || filename == "..")
+                continue;
+
+            if (stat((sessions[client_socket].current_directory + "/" + filename).c_str(), &file_stat) == -1)
+            {
+                perror("stat");
+                sendResponse("550 Requested action not taken. File unavailable.\r\n", client_socket);
+                return;
+            }
+
+            char* time = ctime(&file_stat.st_mtime);
+            time[strlen(time) - 1] = '\0'; // Remove the newline character at the end
+
+            std::string file_type;
+            if (S_ISDIR(file_stat.st_mode))
+                file_type = "d";
+            else
+                file_type = "-";
+
+            std::string permissions = file_type;
+            permissions += (file_stat.st_mode & S_IRUSR) ? "r" : "-";
+            permissions += (file_stat.st_mode & S_IWUSR) ? "w" : "-";
+            permissions += (file_stat.st_mode & S_IXUSR) ? "x" : "-";
+            permissions += (file_stat.st_mode & S_IRGRP) ? "r" : "-";
+            permissions += (file_stat.st_mode & S_IWGRP) ? "w" : "-";
+            permissions += (file_stat.st_mode & S_IXGRP) ? "x" : "-";
+            permissions += (file_stat.st_mode & S_IROTH) ? "r" : "-";
+            permissions += (file_stat.st_mode & S_IWOTH) ? "w" : "-";
+            permissions += (file_stat.st_mode & S_IXOTH) ? "x" : "-";
+            permissions += " 1 ftp ftp";
+
+            std::string size = std::to_string(file_stat.st_size);
+            for(uint32_t index = 0; index < 12 - size.length(); index++)
+                size = " " + size;
+            std::string line = permissions + size + " " + filename + "\r\n";
+            response += line;
         }
+
+        if (sessions[client_socket].transfer_type == ASCII)
+            response = std::regex_replace(response, std::regex("\n"), "\r\n");
+
         closedir(dir);
     }
     else
@@ -424,6 +511,9 @@ void FTPServer::handleStore(const std::string& filename, int client_socket)
             sendResponse("425 Can't open data connection.\r\n", client_socket);
             return;
         }
+        
+        sessions[client_socket].passive_mode = false;
+        sessions[client_socket].active_mode = true;
     }
     else if (sessions[client_socket].active_mode)
     {
@@ -434,12 +524,21 @@ void FTPServer::handleStore(const std::string& filename, int client_socket)
             sendResponse("425 Can't open data connection.\r\n", client_socket);
             return;
         }
+        
         if (connect(data_fd, (struct sockaddr*)&sessions[client_socket].active_data_addr, sizeof(sessions[client_socket].active_data_addr)) == -1)
         {
             perror("connect");
             close(data_fd);
             sendResponse("425 Can't open data connection.\r\n", client_socket);
             return;
+        }
+
+        // Set the SO_REUSEADDR socket option
+        int opt = 1;
+        if (setsockopt(data_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        {
+            perror("setsockopt");
+            exit(EXIT_FAILURE);
         }
     }
     else
@@ -520,6 +619,9 @@ void FTPServer::handleRetrieve(const std::string& filename, int client_socket)
             sendResponse("425 Can't open data connection.\r\n", client_socket);
             return;
         }
+
+        sessions[client_socket].passive_mode = false;
+        sessions[client_socket].active_mode = true;
     }
     else if (sessions[client_socket].active_mode)
     {
@@ -536,6 +638,13 @@ void FTPServer::handleRetrieve(const std::string& filename, int client_socket)
             close(data_fd);
             sendResponse("425 Can't open data connection.\r\n", client_socket);
             return;
+        }
+        // Set the SO_REUSEADDR socket option
+        int opt = 1;
+        if (setsockopt(data_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        {
+            perror("setsockopt");
+            exit(EXIT_FAILURE);
         }
     }
     else

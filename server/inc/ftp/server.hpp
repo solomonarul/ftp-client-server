@@ -12,7 +12,6 @@
 struct FTPServerConfig
 {
     int port = 21;
-    int data_port = 2021;
     int buffer_size = 1024;
     std::string root_dir;
     std::string user = "admin";
@@ -51,6 +50,7 @@ private:
     void handleUser(const std::string& user, int client_socket);
     void handlePassword(const std::string& pass, int client_socket);
     void handleList(int client_socket);
+    void handlePWD();
     void handleStore(const std::string& filename, int client_socket);
     void handleRetrieve(const std::string& filename, int client_socket);
     void handlePort(const std::string& params, int client_socket);
