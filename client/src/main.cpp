@@ -3,7 +3,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::cerr << "Usage: ./ftp_client <IP> <Port>\n";
+        std::cerr << "Usage: .build/ftp-client <IP> <Port>\n";
         return EXIT_FAILURE;
     }
     const std::string server_ip = argv[1];

@@ -9,6 +9,7 @@ public:
     bool connect();
     bool send(const std::string& command);
     bool receive(std::string& response);
+    ~Connection();
 
 private:
     std::string server_ip;
